@@ -149,6 +149,26 @@ test('runtime forwards arguments literally and selects only the intended credent
   assert.equal(settings.binary, options.codexBin);
 });
 
+test('OAuth can create its own model catalog without failing exit or the next API launch', async t => {
+  const options = await fixture(t);
+  await fs.appendFile(options.codexBin, `
+if (process.env.CODEX_HOME.endsWith('.codex-official') && args.includes('exec')) {
+  fs.writeFileSync(path.join(process.env.CODEX_HOME, 'models_cache.json'), 'oauth catalog');
+}
+`);
+  const paths = pathsFor(options.home);
+  await fs.mkdir(paths.shared);
+  await fs.writeFile(path.join(paths.shared, 'models_cache.json'), 'api catalog');
+  await setup(options);
+  const cli = path.join(paths.runtime, 'src', 'cli.mjs');
+  for (const mode of ['official', 'api']) {
+    const result = spawnSync(process.execPath, [cli, 'run', mode, paths.manifest, 'exec', 'test'], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+  }
+  assert.equal(await fs.readFile(path.join(paths.shared, 'models_cache.json'), 'utf8'), 'api catalog');
+  assert.equal(await fs.readFile(path.join(paths.official, 'models_cache.json'), 'utf8'), 'oauth catalog');
+});
+
 test('CLI accepts a key through stdin and installed codex setup is idempotent', async t => {
   const options = await fixture(t);
   const cli = path.resolve('src/cli.mjs');

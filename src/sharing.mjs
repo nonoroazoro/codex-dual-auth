@@ -6,12 +6,12 @@ import { isConfiguration, syncOfficialConfigurations } from './official-config.m
 const DIRECTORIES = ['sessions', 'archived_sessions', 'skills', 'plugins', 'rules', 'shell_snapshots', 'thread-writer-locks', 'tmp', '.tmp', 'log', 'cache'];
 
 /**
- * Keep credentials and daemon endpoints isolated; SQLite has its own shared directory setting.
+ * Keep credentials, provider model catalogs and daemon endpoints isolated; SQLite has its own shared directory setting.
  * @param {string} name Top-level Codex home entry.
  */
 export function isShared(name) {
   return !(isConfiguration(name) || /^auth\.json(?:\.|$)/.test(name) || /\.sqlite(?:-wal|-shm|-journal)?$/.test(name)
-    || ['app-server-control', 'app-server-daemon', '.DS_Store', 'backup', 'backup.zip'].includes(name));
+    || ['models_cache.json', 'app-server-control', 'app-server-daemon', '.DS_Store', 'backup', 'backup.zip'].includes(name));
 }
 
 /**
