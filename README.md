@@ -7,6 +7,15 @@ Switch between API and OAuth with shared Codex conversations.
 
 Both commands use the same Codex installation, configuration, and conversation history. Authentication stays separate, and each session starts without the background daemon.
 
+## Setup with an agent
+
+Paste this into Codex, Claude Code, or another coding agent:
+
+```text
+Set up https://github.com/nonoroazoro/codex-dual-auth on my computer.
+Follow its README, ask me for any required inputs, and verify with `codex doctor`.
+```
+
 ## Setup
 
 Requires **Node.js 22+** and an installed **Codex CLI**. Start with a clean Codex configuration; setup will not overwrite an existing unmanaged configuration.
