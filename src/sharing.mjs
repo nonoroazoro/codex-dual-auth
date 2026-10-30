@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { inspect, transaction } from './files.mjs';
+import { isConfiguration, syncOfficialConfigurations } from './official-config.mjs';
 
 const DIRECTORIES = ['sessions', 'archived_sessions', 'skills', 'plugins', 'rules', 'shell_snapshots', 'thread-writer-locks', 'tmp', '.tmp', 'log', 'cache'];
 
@@ -9,7 +10,7 @@ const DIRECTORIES = ['sessions', 'archived_sessions', 'skills', 'plugins', 'rule
  * @param {string} name Top-level Codex home entry.
  */
 export function isShared(name) {
-  return !(/^auth\.json(?:\.|$)/.test(name) || /\.sqlite(?:-wal|-shm|-journal)?$/.test(name)
+  return !(isConfiguration(name) || /^auth\.json(?:\.|$)/.test(name) || /\.sqlite(?:-wal|-shm|-journal)?$/.test(name)
     || ['app-server-control', 'app-server-daemon', '.DS_Store', 'backup', 'backup.zip'].includes(name));
 }
 
@@ -64,6 +65,7 @@ export async function syncShared(paths, tx) {
       if (!await inspect(target)) await tx.link(source, target);
       else if (!await linkMatches(source, target)) throw new Error(`Shared path conflict: ${target}`);
     }
+    await syncOfficialConfigurations(paths, tx);
   } catch (error) {
     if (own) await tx.rollback();
     throw error;

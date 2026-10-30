@@ -17,8 +17,19 @@ test('both modes use one provider and SQLite path while scrubbing inherited iden
     assert.equal(env.PATH, 'preserved');
     assert.equal(env.CODEX_HOME, mode === 'api' ? paths.shared : paths.official);
   }
-  assert.ok(invocation('official', paths, []).includes('model_providers.codex.base_url="https://chatgpt.com/backend-api/codex"'));
+  assert.ok(invocation('official', paths, []).some(arg => arg.startsWith('model_providers={"codex"={') && arg.includes('base_url="https://chatgpt.com/backend-api/codex"')));
   assert.ok(!invocation('api', paths, []).some(arg => arg.includes('base_url')));
+});
+
+test('provider environment credentials are available only to the API launcher', () => {
+  const paths = pathsFor('/tmp/User Home');
+  const original = { OPENAI_API_KEY: 'provider-secret' };
+  assert.equal(environment('api', paths, original, 'OPENAI_API_KEY').OPENAI_API_KEY, 'provider-secret');
+  assert.equal(environment('official', paths, original, 'OPENAI_API_KEY').OPENAI_API_KEY, undefined);
+  const api = { provider: 'custom', authMode: 'provider' };
+  assert.ok(invocation('api', paths, [], api).includes('model_provider="custom"'));
+  const official = invocation('official', paths, [], api);
+  assert.ok(official.some(arg => arg.startsWith('model_providers={"custom"={') && arg.includes('requires_openai_auth=true')));
 });
 
 test('URL and model inputs cannot inject TOML or contain URL credentials', () => {

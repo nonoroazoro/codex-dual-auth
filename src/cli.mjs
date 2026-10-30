@@ -9,7 +9,7 @@ import { Writable } from 'node:stream';
 import { setup, readInstallation } from './setup.mjs';
 import { launch, doctor } from './launch.mjs';
 import { pathsFor } from './config.mjs';
-import { inspect } from './files.mjs';
+import { readApiConfiguration } from './api-config.mjs';
 
 const HELP = `Usage:
   node src/cli.mjs setup [options]
@@ -23,24 +23,26 @@ Setup options:
   --api-key-stdin      Read the API key from stdin, never from command arguments
   --codex-bin PATH     Existing Codex executable or npm codex.js
   --home PATH          User home to configure (default: OS user home)
-  --install-shell     Add launchers to zsh/user PATH; never change security policy
+  --install-shell     Add launchers to zsh/user PATH (default)
+  --no-install-shell  Leave shell/user PATH unchanged
   --login             Start the normal browser OAuth login after setup
 
 Requires Node.js 22+ and an installed Codex CLI supporting --no-daemon.
 Windows file links require Developer Mode or an Administrator terminal.
-Existing unmanaged Codex configuration is never overwritten.
+Existing API settings and credentials are reused. Only missing API inputs are requested.
 `;
 
 /**
  * Dispatch setup commands separately from native Codex arguments.
  * @param {string[]} argv Command-line arguments.
+ * @param {object} io Optional terminal interaction overrides.
  */
-export async function main(argv) {
+export async function main(argv, io = {}) {
   if (argv[0] === 'run') {
     const [, mode, manifest, ...args] = argv;
     const home = path.dirname(path.dirname(manifest));
     if (pathsFor(home).manifest !== path.resolve(manifest)) throw new Error('Invalid launcher manifest path.');
-    if (mode === 'api' && ['setup', 'doctor'].includes(args[0])) return main([args[0], '--home', home, ...args.slice(1)]);
+    if (mode === 'api' && ['setup', 'doctor'].includes(args[0])) return main([args[0], '--home', home, ...args.slice(1)], io);
     return launch(mode, home, args);
   }
   if (!argv.length || argv.includes('--help') || argv.includes('-h')) {
@@ -53,7 +55,7 @@ export async function main(argv) {
     home: { type: 'string', default: os.homedir() },
     'base-url': { type: 'string' }, model: { type: 'string' },
     'api-key-stdin': { type: 'boolean' }, 'codex-bin': { type: 'string' },
-    'install-shell': { type: 'boolean' }, login: { type: 'boolean' },
+    'install-shell': { type: 'boolean' }, 'no-install-shell': { type: 'boolean' }, login: { type: 'boolean' },
   } });
   if (command === 'doctor') {
     const checks = await doctor(values.home);
@@ -61,31 +63,46 @@ export async function main(argv) {
     return checks.every(check => check.ok) ? 0 : 1;
   }
   const existing = await readInstallation(values.home);
+  const api = await readApiConfiguration(values.home);
   const options = {
-    home: values.home, baseUrl: values['base-url'], model: values.model,
+    home: values.home, baseUrl: values['base-url'] ?? api.baseUrl ?? existing?.baseUrl,
+    model: values.model ?? api.model ?? existing?.model,
     codexBin: values['codex-bin'], installShell: values['install-shell'],
   };
   if (values['api-key-stdin']) options.apiKey = (await _readStdin()).replace(/(?:\r?\n)+$/, '');
-  const interactive = process.stdin.isTTY && process.stdout.isTTY;
-  if (interactive && !existing) {
-    options.baseUrl ??= await _question('API base URL: ');
-    options.model ??= await _question('Shared model ID: ');
-    if (!options.apiKey && !await inspect(path.join(pathsFor(values.home).shared, 'auth.json'))) {
-      options.apiKey = await _question('API key (hidden): ', true);
-    }
-    options.installShell ??= (await _question('Add launchers to shell PATH? [Y/n]: ')).toLowerCase() !== 'n';
+  const interactive = io.interactive ?? (process.stdin.isTTY && process.stdout.isTTY);
+  if (interactive) {
+    await promptApiInputs(options, api, io.question);
   }
+  if (values['install-shell'] && values['no-install-shell']) throw new Error('Choose either --install-shell or --no-install-shell.');
+  options.installShell = !values['no-install-shell'];
   const result = await setup(options);
   console.log(`${result.existing ? 'Verified existing' : 'Installed'} configuration for ${result.version}.`);
   console.log(`Shared data: ${result.paths.shared}`);
   console.log(`Launchers: ${result.paths.bin}`);
   console.log('Open a new terminal after changing PATH. Existing aliases/functions may shadow the launchers.');
   if (!options.installShell) console.log(`Add ${result.paths.bin} before the existing Codex directory in PATH.`);
-  if (values.login || (interactive && !existing && (await _question('Sign in to ChatGPT now? [Y/n]: ')).toLowerCase() !== 'n')) {
+  if (values.login) {
     return launch('official', values.home, ['login']);
   }
-  console.log('Complete OAuth with codex-official login, then run codex doctor.');
+  console.log('Run codex for API access or codex-official for ChatGPT. ChatGPT sign-in is handled when needed.');
   return 0;
+}
+
+/**
+ * Ask only for missing API inputs discovered by {@link readApiConfiguration}.
+ * @param {object} options Setup inputs, filled in place.
+ * @param {object} api Existing API configuration.
+ * @param {Function} question Prompt implementation, including hidden credential input.
+ */
+export async function promptApiInputs(options, api, question = _question) {
+  if (!api.hasApiKey && !options.apiKey) {
+    if (api.envKey) throw new Error(`Set ${api.envKey} before running setup; the existing provider uses this environment variable.`);
+    if (api.authExists) throw new Error('Existing auth.json has no API key. Configure API authentication before setup; existing credentials were preserved.');
+  }
+  options.baseUrl ??= api.baseUrl ?? await question('API base URL: ');
+  options.model ??= api.model ?? await question('Shared model ID: ');
+  if (!options.apiKey && !api.hasApiKey) options.apiKey = await question('API key (hidden): ', true);
 }
 
 async function _question(prompt, secret = false) {

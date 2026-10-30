@@ -11,5 +11,8 @@
     "check": "node scripts/check.mjs",
     "setup": "node src/cli.mjs setup",
     "doctor": "node src/cli.mjs doctor"
+  },
+  "dependencies": {
+    "smol-toml": "^1.9.1"
   }
 }

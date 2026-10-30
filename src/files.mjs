@@ -43,11 +43,19 @@ export function transaction() {
       });
     },
     async replace(target, before, after) {
-      // This is used only for an explicitly requested shell profile edit.
+      // Refuse concurrent edits and roll back only content still owned by this transaction.
       if (await fs.readFile(target, 'utf8') !== before) throw new Error(`Changed during setup: ${target}`);
-      await fs.writeFile(target, after);
+      await _replaceFile(target, before, after);
       undo.push(async () => {
-        if (await fs.readFile(target, 'utf8') === after) await fs.writeFile(target, before);
+        if (await fs.readFile(target, 'utf8') === after) await _replaceFile(target, after, before);
+      });
+    },
+    async remove(target, before) {
+      if (await fs.readFile(target, 'utf8') !== before) throw new Error(`Changed during setup: ${target}`);
+      const mode = (await fs.stat(target)).mode & 0o777;
+      await fs.unlink(target);
+      undo.push(async () => {
+        if (!await inspect(target)) await fs.writeFile(target, before, { flag: 'wx', mode });
       });
     },
     async rollback() {
@@ -81,4 +89,17 @@ export async function checkLinkSupport(home) {
 
 function _digest(contents) {
   return crypto.createHash('sha256').update(contents).digest('hex');
+}
+
+async function _replaceFile(target, before, after) {
+  const resolved = await fs.realpath(target);
+  const temporary = resolved + '.codex-setup-' + crypto.randomBytes(8).toString('hex');
+  try {
+    const stat = await fs.stat(resolved);
+    await fs.writeFile(temporary, after, { flag: 'wx', mode: stat.mode & 0o777 });
+    if (await fs.readFile(resolved, 'utf8') !== before) throw new Error(`Changed during setup: ${target}`);
+    await fs.rename(temporary, resolved);
+  } finally {
+    await fs.rm(temporary, { force: true });
+  }
 }

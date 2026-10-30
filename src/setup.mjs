@@ -5,6 +5,7 @@ import { initialConfig, pathsFor, validateSettings, environment } from './config
 import { checkLinkSupport, inspect, transaction } from './files.mjs';
 import { findCodex, launcherFiles, verifyCodex, shellProfile, installWindowsPath } from './platform.mjs';
 import { checkSharing, syncShared } from './sharing.mjs';
+import { readApiConfiguration, completeApiConfiguration } from './api-config.mjs';
 
 const SOURCE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -23,7 +24,7 @@ export async function readInstallation(home) {
 }
 
 /**
- * Install into a clean home or safely verify an already managed installation.
+ * Reuse existing API configuration or safely install into a clean home.
  * @param {object} options Installation inputs. API keys are never placed in the manifest.
  */
 export async function setup(options) {
@@ -38,24 +39,23 @@ export async function setup(options) {
   const tx = transaction();
   try {
     const existing = await readInstallation(paths.home);
-    if (!existing && await inspect(path.join(paths.shared, 'config.toml'))) {
-      throw new Error('Existing unmanaged config.toml found. Setup targets a clean Codex configuration and will not overwrite it.');
-    }
+    const api = await readApiConfiguration(paths.home);
     if (existing && !await inspect(path.join(paths.shared, 'config.toml'))) {
       throw new Error('The shared config.toml is missing. Restore it before rerunning setup.');
     }
-    const inputs = validateSettings(options.baseUrl ?? existing?.baseUrl, options.model ?? existing?.model);
-    if (existing && (inputs.baseUrl !== existing.baseUrl || inputs.model !== existing.model)) {
-      throw new Error('This installation is already configured. Edit the shared config.toml to change URL/model; setup will not replace it.');
+    const inputs = validateSettings(options.baseUrl ?? api.baseUrl ?? existing?.baseUrl, options.model ?? api.model ?? existing?.model);
+    if ((api.baseUrl && inputs.baseUrl !== api.baseUrl.replace(/\/+$/, '')) || (api.model && inputs.model !== api.model)) {
+      throw new Error('Supplied API settings differ from existing config.toml. Existing settings were preserved.');
     }
     if (existing && options.codexBin && await findCodex(options.codexBin, paths.bin) !== existing.binary) {
       throw new Error('This installation already uses another Codex binary. Reruns do not switch binaries.');
     }
     const binary = existing?.binary ?? await findCodex(options.codexBin, paths.bin);
     const authPath = path.join(paths.shared, 'auth.json');
-    if (!await inspect(authPath) && !options.apiKey) throw new Error('An API key is required. Use the hidden prompt or --api-key-stdin.');
+    if (!api.hasApiKey && !options.apiKey) throw new Error(api.envKey ? `Set ${api.envKey} before running setup.` : 'An API key is required. Use the hidden prompt or --api-key-stdin.');
+    if (api.envKey && !api.hasApiKey) throw new Error(`Set ${api.envKey} before running setup; credentials were not changed.`);
     if (options.apiKey && (!options.apiKey.trim() || /[\r\n\x00]/.test(options.apiKey))) throw new Error('API key must be a non-empty single line.');
-    if (await inspect(authPath)) {
+    if (await inspect(authPath) && api.authMode === 'file') {
       const auth = JSON.parse(await fs.readFile(authPath, 'utf8'));
       if (!auth.OPENAI_API_KEY || (options.apiKey && auth.OPENAI_API_KEY !== options.apiKey)) {
         throw new Error('Existing auth.json differs from the supplied API credentials. It was not changed.');
@@ -75,8 +75,18 @@ export async function setup(options) {
     try { version = verifyCodex(binary, { ...environment('api', paths), CODEX_HOME: probe }); }
     finally { await fs.rm(probe, { recursive: true, force: true }); }
     for (const directory of [paths.shared, paths.official, paths.runtime, path.join(paths.runtime, 'src'), paths.bin]) await tx.directory(directory);
-    if (!existing) await tx.file(path.join(paths.shared, 'config.toml'), initialConfig(inputs));
-    if (!await inspect(authPath)) await tx.file(authPath, JSON.stringify({ OPENAI_API_KEY: options.apiKey }) + '\n');
+    if (api.text === null) await tx.file(path.join(paths.shared, 'config.toml'), initialConfig(inputs));
+    else {
+      const completed = completeApiConfiguration(api, inputs);
+      if (completed !== api.text) {
+        await tx.file(path.join(paths.runtime, 'config.toml.before-setup'), api.text);
+        await tx.replace(path.join(paths.shared, 'config.toml'), api.text, completed);
+      }
+    }
+    if (!api.hasApiKey && !await inspect(authPath)) await tx.file(authPath, JSON.stringify({ OPENAI_API_KEY: options.apiKey }) + '\n');
+    // Installed launchers must remain usable after the source checkout is removed.
+    const dependency = path.dirname(path.dirname(fileURLToPath(import.meta.resolve('smol-toml'))));
+    await _installDependency(dependency, path.join(paths.runtime, 'node_modules', 'smol-toml'), tx);
     for (const name of (await fs.readdir(SOURCE)).filter(name => name.endsWith('.mjs'))) {
       const contents = await fs.readFile(path.join(SOURCE, name));
       const target = path.join(paths.runtime, 'src', name);
@@ -108,5 +118,19 @@ export async function setup(options) {
   } finally {
     await lock.close();
     await fs.unlink(lockPath);
+  }
+}
+
+async function _installDependency(source, target, tx) {
+  await tx.directory(target);
+  for (const entry of await fs.readdir(source, { withFileTypes: true })) {
+    const from = path.join(source, entry.name);
+    const to = path.join(target, entry.name);
+    if (entry.isDirectory()) await _installDependency(from, to, tx);
+    else {
+      const contents = await fs.readFile(from);
+      if (!await inspect(to)) await tx.file(to, contents);
+      else if (!(await fs.readFile(to)).equals(contents)) throw new Error(`Installed dependency differs: ${to}`);
+    }
   }
 }

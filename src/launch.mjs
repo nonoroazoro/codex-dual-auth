@@ -5,6 +5,7 @@ import { pathsFor, environment, invocation } from './config.mjs';
 import { binaryCommand, launcherFiles } from './platform.mjs';
 import { readInstallation } from './setup.mjs';
 import { checkSharing, syncShared, linkMatches, isShared } from './sharing.mjs';
+import { readApiConfiguration } from './api-config.mjs';
 
 /**
  * Execute a mode with shared state and process-local authentication overrides.
@@ -17,9 +18,12 @@ export async function launch(mode, home, args) {
   if (!settings) throw new Error('Run codex-setup setup first.');
   const paths = pathsFor(home);
   await syncShared(paths);
-  const command = binaryCommand(settings.binary, invocation(mode, paths, args));
+  const api = await readApiConfiguration(home);
+  const command = binaryCommand(settings.binary, invocation(mode, paths, args, api));
+  const env = environment(mode, paths, process.env, api.envKey);
+  if (mode === 'api' && api.provider === 'openai') env.OPENAI_BASE_URL = api.baseUrl;
   return new Promise((resolve, reject) => {
-    const child = spawn(command.command, command.args, { stdio: 'inherit', env: environment(mode, paths), windowsHide: false });
+    const child = spawn(command.command, command.args, { stdio: 'inherit', env, windowsHide: false });
     // The terminal sends Ctrl+C to both processes. Keep the wrapper alive for the child's exit.
     const interrupt = () => {};
     const terminate = () => child.kill('SIGTERM');
@@ -30,7 +34,12 @@ export async function launch(mode, home, args) {
       process.off('SIGTERM', terminate);
     };
     child.once('error', error => { cleanup(); reject(error); });
-    child.once('exit', (code, signal) => { cleanup(); resolve(code ?? (signal === 'SIGINT' ? 130 : 1)); });
+    child.once('exit', (code, signal) => {
+      cleanup();
+      // Native config editing commands write the OAuth view; merge those edits back before returning.
+      const sync = mode === 'official' ? syncShared(paths) : Promise.resolve();
+      sync.then(() => resolve(code ?? (signal === 'SIGINT' ? 130 : 1)), reject);
+    });
   });
 }
 
@@ -44,6 +53,7 @@ export async function doctor(home) {
   const paths = pathsFor(home);
   await checkSharing(paths);
   const checks = [];
+  const api = await readApiConfiguration(home);
   for (const name of (await fs.readdir(paths.shared)).filter(isShared)) {
     if (!await linkMatches(path.join(paths.shared, name), path.join(paths.official, name))) {
       checks.push({ ok: false, message: `Missing shared mapping: ${name}. Run setup again.` });
@@ -54,12 +64,15 @@ export async function doctor(home) {
     checks.push({ ok: installed === file.contents, message: `${file.name} launcher` });
   }
   checks.push({ ok: true, message: 'Both launchers use the same Codex binary, provider ID, and SQLite home; --no-daemon is enforced.' });
-  for (const mode of ['api', 'official']) {
-    const command = binaryCommand(settings.binary, invocation(mode, paths, ['login', 'status']));
-    const result = spawnSync(command.command, command.args, { env: environment(mode, paths), encoding: 'utf8', timeout: 15000, windowsHide: true });
+  if (api.authMode === 'provider') {
+    checks.push({ ok: api.hasApiKey, message: `API provider authentication${api.hasApiKey ? '' : ': configure the provider credential source'}` });
+  } else {
+    const command = binaryCommand(settings.binary, invocation('api', paths, ['login', 'status'], api));
+    const result = spawnSync(command.command, command.args, { env: environment('api', paths, process.env, api.envKey), encoding: 'utf8', timeout: 15000, windowsHide: true });
     const output = (result.stdout ?? '') + (result.stderr ?? '');
-    const ok = result.status === 0 && (mode === 'api' ? /API key/i : /ChatGPT/i).test(output);
-    checks.push({ ok, message: `${mode} authentication${ok ? '' : `: run ${mode === 'api' ? 'codex login --with-api-key' : 'codex-official login'}`}` });
+    const ok = result.status === 0 && /API key/i.test(output);
+    checks.push({ ok, message: `API authentication${ok ? '' : ': run codex login --with-api-key'}` });
   }
+  checks.push({ ok: true, message: 'ChatGPT sign-in is handled when codex-official is used.' });
   return checks;
 }

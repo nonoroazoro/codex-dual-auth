@@ -5,7 +5,7 @@ Switch between API and OAuth with shared Codex conversations.
 - `codex` uses your API key.
 - `codex-official` uses your ChatGPT account.
 
-Both commands use the same Codex installation, configuration, and conversation history. Authentication stays separate, and each session starts without the background daemon.
+Both share configuration and conversations, with separate authentication.
 
 ## Setup with an agent
 
@@ -13,23 +13,28 @@ Paste this into Codex, Claude Code, or another coding agent:
 
 ```text
 Set up https://github.com/nonoroazoro/codex-dual-auth on my computer.
-Follow its README, ask me for any required inputs, and verify with `codex doctor`.
+Follow its README and verify with `codex doctor`.
 ```
 
 ## Setup
 
-Requires **Node.js 22+** and an installed **Codex CLI**. Start with a clean Codex configuration; setup will not overwrite an existing unmanaged configuration.
+Requires **Node.js 22+** and **Codex CLI**.
 
-On Windows, enable **Developer Mode** or use an **Administrator terminal** to create file links.
+Windows requires **Developer Mode** or an **Administrator terminal**.
 
-1. Run from this project directory:
+1. Install dependencies from this project directory:
+
+   ```sh
+   npm ci
+   ```
+
+2. Run setup:
 
    ```sh
    node src/cli.mjs setup
    ```
 
-2. Enter your API endpoint, model, and API key when prompted.
-3. Follow the prompts to configure PATH and sign in to ChatGPT.
+3. Provide any missing API settings.
 4. Open a new terminal.
 5. Check the installation:
 
@@ -37,11 +42,7 @@ On Windows, enable **Developer Mode** or use an **Administrator terminal** to cr
    codex doctor
    ```
 
-If Windows has not refreshed PATH, run this in PowerShell:
-
-```powershell
-$env:Path = "$HOME\.local\bin;" + $env:Path
-```
+ChatGPT sign-in starts when you first use `codex-official`.
 
 ## Use
 
@@ -57,8 +58,7 @@ Finish the current turn before switching commands for the same conversation.
 ```sh
 codex setup              # Rerun without replacing correct configuration
 codex doctor             # Check configuration and authentication
-codex-official login     # Sign in to ChatGPT
 node src/cli.mjs --help   # Setup options
 ```
 
-Tested locally on macOS; Windows execution is not yet verified. Local checks: `npm run check`, `npm test`, and `node scripts/native-check.mjs`.
+Tested on macOS. Windows execution is not yet verified.

@@ -49,16 +49,24 @@ export function initialConfig({ baseUrl, model }) {
  * @param {'api'|'official'} mode Authentication mode.
  * @param {ReturnType<typeof pathsFor>} paths Installed paths.
  * @param {string[]} args User arguments, forwarded without a shell.
+ * @param {object} api Existing provider settings discovered by setup.
  */
-export function invocation(mode, paths, args) {
+export function invocation(mode, paths, args, api = {}) {
   if (!['api', 'official'].includes(mode)) throw new Error('Unknown authentication mode.');
+  const provider = api.provider ?? PROVIDER;
   const overrides = [
-    '--no-daemon', '-c', `model_provider="${PROVIDER}"`,
+    '--no-daemon', '-c', `model_provider=${JSON.stringify(provider)}`,
     '-c', `sqlite_home=${JSON.stringify(paths.shared)}`,
     '-c', `cli_auth_credentials_store="${mode === 'api' ? 'file' : 'keyring'}"`,
     '-c', `forced_login_method="${mode === 'api' ? 'api' : 'chatgpt'}"`,
   ];
-  if (mode === 'official') overrides.push('-c', `model_providers.${PROVIDER}.base_url="${OFFICIAL_URL}"`);
+  if (mode === 'official') {
+    // Credential fields are removed from the OAuth config view before native overrides are merged.
+    overrides.push('-c', `model_providers={${JSON.stringify(provider)}={name="OpenAI",base_url="${OFFICIAL_URL}",wire_api="responses",requires_openai_auth=true}}`);
+    overrides.push('-c', `openai_base_url="${OFFICIAL_URL}"`);
+  } else if (api.authMode === 'file') {
+    overrides.push('-c', `model_providers={${JSON.stringify(provider)}={requires_openai_auth=true}}`);
+  }
   return [...overrides, ...args];
 }
 
@@ -67,10 +75,15 @@ export function invocation(mode, paths, args) {
  * @param {'api'|'official'} mode Authentication mode.
  * @param {ReturnType<typeof pathsFor>} paths Installed paths.
  * @param {NodeJS.ProcessEnv} original Parent environment.
+ * @param {string|undefined} envKey Current API provider's credential variable.
  */
-export function environment(mode, paths, original = process.env) {
+export function environment(mode, paths, original = process.env, envKey) {
   const env = { ...original };
   for (const key of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_SELF_HOSTED_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_ACCESS_TOKEN', 'OPENAI_FEDERATION_RULE_ID', 'OPENAI_IDENTITY_TOKEN_FILE']) delete env[key];
+  if (envKey) {
+    delete env[envKey];
+    if (mode === 'api' && original[envKey]) env[envKey] = original[envKey];
+  }
   env.CODEX_HOME = mode === 'api' ? paths.shared : paths.official;
   env.CODEX_SQLITE_HOME = paths.shared;
   return env;
